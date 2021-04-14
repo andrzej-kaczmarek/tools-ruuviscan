@@ -417,15 +417,9 @@ static void ready_callback(void *user_data)
 	}
 }
 
-static void signal_handler(struct l_signal *signal, uint32_t signo,
-							void *user_data)
+static void signal_handler(void *user_data)
 {
-	switch (signo) {
-	case SIGINT:
-	case SIGTERM:
-		l_main_quit();
-		break;
-	}
+	l_main_quit();
 }
 
 static void scan_timeout(struct l_timeout *timeout, void *user_data)
@@ -437,7 +431,7 @@ int main(int argc, char **argv)
 {
 	struct l_dbus_client *client;
 	struct l_signal *signal;
-	sigset_t mask;
+	uint32_t signal_mask;
 	struct l_timeout *timeout;
 
 	l_log_set_stderr();
@@ -447,10 +441,8 @@ int main(int argc, char **argv)
 
 	ruuvitags = l_queue_new();
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGINT);
-	sigaddset(&mask, SIGTERM);
-	signal = l_signal_create(&mask, signal_handler, NULL, NULL);
+	signal_mask = SIGINT | SIGTERM;
+	signal = l_signal_create(signal_mask, signal_handler, NULL, NULL);
 
 	dbus = l_dbus_new_default(L_DBUS_SYSTEM_BUS);
 	l_dbus_set_ready_handler(dbus, ready_callback, NULL, NULL);
