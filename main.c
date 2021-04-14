@@ -19,6 +19,7 @@
  */
 
 #include <stdio.h>
+#include <signal.h>
 #include <ell/ell.h>
 
 #if __BYTE_ORDER != __LITTLE_ENDIAN
