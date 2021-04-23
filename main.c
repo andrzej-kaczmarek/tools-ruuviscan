@@ -19,6 +19,7 @@
  */
 
 #include <stdio.h>
+#include <signal.h>
 #include <ell/ell.h>
 
 #if __BYTE_ORDER != __LITTLE_ENDIAN
@@ -39,6 +40,9 @@ struct ruuvitag {
 	float pressure;
 	unsigned int battery;
 	uint8_t tag_id;
+	int8_t tx_pow;
+	uint8_t move_counter;
+	uint16_t meas_seq;
 };
 
 struct ruuvi3 {
@@ -62,6 +66,21 @@ struct ruuvi4 {
 	uint8_t temperature_frac;
 	uint16_t pressure;
 	uint8_t tag_id;
+} __attribute__((packed));
+
+struct ruuvi5 {
+	uint8_t dfd;
+	uint16_t temperature;
+	uint16_t humidity;
+	uint16_t pressure;
+	uint16_t accel_x;
+	uint16_t accel_y;
+	uint16_t accel_z;
+	uint16_t battery : 11;
+	uint16_t tx_pow : 5;
+	uint8_t move_counter;
+	uint16_t meas_seq;
+	uint8_t addr[6];
 } __attribute__((packed));
 
 static struct l_dbus *dbus;
@@ -147,6 +166,12 @@ static void print_ruuvitag(struct l_dbus_proxy *proxy,
 		printf("    B=%d mV\n", ruuvitag->battery);
 	if (ruuvitag->data_format == 4)
 		printf("    I=%d\n", ruuvitag->tag_id);
+	if (ruuvitag->data_format == 5) {
+		printf("    B=%d mV\n", ruuvitag->battery);
+		printf("    TX=%d dBm\n", ruuvitag->tx_pow);
+		printf("    M=%d\n", ruuvitag->move_counter);
+		printf("    S=%d\n", ruuvitag->meas_seq);
+	}
 }
 
 static bool decode_ruuvi3(const uint8_t *data, size_t length,
@@ -191,6 +216,29 @@ static bool decode_ruuvi4(const uint8_t *data, size_t length,
 	return true;
 }
 
+static bool decode_ruuvi5(const uint8_t *data, size_t length,
+																										struct ruuvitag *ruuvitag) {
+	struct ruuvi5 *r5 = (struct ruuvi5 *)data;
+
+	if (length < sizeof(*r5))
+		return false;
+
+	memset(ruuvitag, 0, sizeof(*ruuvitag));
+
+	ruuvitag->data_format = 5;
+	ruuvitag->humidity = L_BE16_TO_CPU(r5->humidity) / 400.0;
+	ruuvitag->temperature = L_BE16_TO_CPU(r5->temperature) / 200.0;
+	ruuvitag->pressure = (L_BE16_TO_CPU(r5->pressure) + 50000) / 100.0;
+	ruuvitag->battery = (L_BE16_TO_CPU(r5->battery) / 100) + 1600;
+	ruuvitag->tx_pow = r5->tx_pow - 40;
+	ruuvitag->move_counter = r5->move_counter;
+	ruuvitag->meas_seq = r5->meas_seq;
+
+	// XXX Bluetooth address is left
+
+	return true;
+}
+
 static bool decode_ruuvi(const uint8_t *data, size_t length,
 							struct ruuvitag *ruuvi)
 {
@@ -201,6 +249,8 @@ static bool decode_ruuvi(const uint8_t *data, size_t length,
 		return decode_ruuvi3(data, length, ruuvi);
 	else if (data[0] == 4)
 		return decode_ruuvi4(data, length, ruuvi);
+	else if (data[0] == 5)
+		return decode_ruuvi5(data, length, ruuvi);
 
 	return false;
 }
@@ -416,15 +466,9 @@ static void ready_callback(void *user_data)
 	}
 }
 
-static void signal_handler(struct l_signal *signal, uint32_t signo,
-							void *user_data)
+static void signal_handler(void *user_data)
 {
-	switch (signo) {
-	case SIGINT:
-	case SIGTERM:
-		l_main_quit();
-		break;
-	}
+	l_main_quit();
 }
 
 static void scan_timeout(struct l_timeout *timeout, void *user_data)
@@ -436,7 +480,7 @@ int main(int argc, char **argv)
 {
 	struct l_dbus_client *client;
 	struct l_signal *signal;
-	sigset_t mask;
+	uint32_t signal_mask;
 	struct l_timeout *timeout;
 
 	l_log_set_stderr();
@@ -446,10 +490,8 @@ int main(int argc, char **argv)
 
 	ruuvitags = l_queue_new();
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGINT);
-	sigaddset(&mask, SIGTERM);
-	signal = l_signal_create(&mask, signal_handler, NULL, NULL);
+	signal_mask = SIGINT | SIGTERM;
+	signal = l_signal_create(signal_mask, signal_handler, NULL, NULL);
 
 	dbus = l_dbus_new_default(L_DBUS_SYSTEM_BUS);
 	l_dbus_set_ready_handler(dbus, ready_callback, NULL, NULL);
